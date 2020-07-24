@@ -1,0 +1,126 @@
+#include <ros/ros.h>
+#include <std_msgs/Float32MultiArray.h>
+#include <std_msgs/Int32MultiArray.h>
+#include <geometry_msgs/PoseStamped.h>
+#include <tf/transform_broadcaster.h>
+#include <geometry_msgs/Twist.h>
+#include <std_msgs/String.h>
+#include <opencv2/opencv.hpp>
+#include <sensor_msgs/Range.h>
+#include <sensor_msgs/Image.h>
+#include <std_msgs/UInt8.h>
+#include <std_srvs/Empty.h>
+
+
+int id = 0;
+ros::Publisher action_pub;
+geometry_msgs::Twist set_vel;
+
+float distFL = 0;
+float distFR = 0;
+
+bool print_b;
+ros::Publisher brightness_pub;
+int frames_passed = 0;
+
+tf::Transform transform;
+tf::Quaternion q;
+float deg2rad = 3.14159/180;
+
+void imu_callback(const geometry_msgs::Vector3 &imu)
+{
+    static tf::TransformBroadcaster br;
+    q = tf::createQuaternionFromRPY(imu.x * deg2rad, imu.y * deg2rad, imu.z * deg2rad);
+
+ 
+    transform.setOrigin(tf::Vector3(0.0, 0.0, 0.0));
+    transform.setRotation(q);
+
+    br.sendTransform(tf::StampedTransform(transform, ros::Time::now(), "base_link", "orientation"));
+}
+
+void imageCallback(const sensor_msgs::ImageConstPtr &image)
+{
+   long long sum = 0;
+   for (int value : image->data)
+   {
+      sum += value;
+   }
+   int avg = sum / image->data.size();
+   if (print_b)
+   {
+      std::cout << "Brightness: " << avg << std::endl;
+   }
+   std_msgs::UInt8 brightness_value;
+   brightness_value.data = avg;
+   brightness_pub.publish(brightness_value);
+   frames_passed++;
+}
+
+
+
+
+
+void distFL_callback(const sensor_msgs::Range &range) 
+{
+   	distFL = range.range;
+	if(distFL > 0.7 )
+	{
+		set_vel.linear.x = 0.5;
+   		set_vel.angular.z = 0;
+	}
+	else if(distFL > 0.2 )
+	{
+		set_vel.linear.x = 0.3;
+   		set_vel.angular.z = 0;
+	}
+        else 
+	{
+		set_vel.linear.x = 0.1;
+   		set_vel.angular.z = 0;
+	}
+
+	action_pub.publish(set_vel);
+}
+
+
+
+int main(int argc, char **argv)
+{
+
+   ros::init(argc, argv, "action_controller");
+   ros::NodeHandle n("~");
+   ros::Rate loop_rate(50);
+
+   ros::Subscriber distFL_sub = n.subscribe("/range/fl", 1, distFL_callback);
+   //ros::Subscriber distFR_sub = n.subscribe("/range/fr", 1, distFR_callback);
+
+   ros::Subscriber pose_sub = n.subscribe("/rpy", 1, imu_callback);
+
+   ros::Subscriber sub = n.subscribe("/camera/rgb/image_raw", 10, imageCallback);
+   n.param<bool>("print_brightness", print_b, false);
+   brightness_pub = n.advertise<std_msgs::UInt8>("brightness", 1);
+   ros::ServiceClient client = n.serviceClient<std_srvs::Empty>("/image_saver/save");
+   std_srvs::Empty srv;
+ 
+   action_pub = n.advertise<geometry_msgs::Twist>("/cmd_vel", 1);
+   set_vel.linear.x = 0;
+   set_vel.linear.y = 0;
+   set_vel.linear.z = 0;
+   set_vel.angular.x = 0;
+   set_vel.angular.y = 0;
+   set_vel.angular.z = 0;
+
+   while (ros::ok())
+   {
+      
+      if (frames_passed > 100)
+      {
+         frames_passed = 0;
+         client.call(srv);
+      }
+   
+      ros::spinOnce();
+      loop_rate.sleep();
+   }
+}
